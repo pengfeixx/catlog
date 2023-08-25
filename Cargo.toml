@@ -1,0 +1,12 @@
+[package]
+name = "catlog"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+console       = "0.15.7"
+termion       = "2.0.1"
+clap          = "2.27.0"
+hotwatch      = "0.5.0"
