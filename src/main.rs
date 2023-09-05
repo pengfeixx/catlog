@@ -1,12 +1,15 @@
 use std::fs::File;
 use std::fs;
-use std::io::{self, BufRead, stdin, stdout, Write, Stdout};
+use notify::{RecommendedWatcher, RecursiveMode, watcher, Watcher};
+use std::io;
+use std::sync::mpsc::channel;
+
+use std::io::{BufRead, stdin, stdout, Write, Stdout};
 use std::path::Path;
 use std::process::Output;
 use console::Term;
 use clap::{Arg, App};
 use std::{time::Duration, thread};
-use hotwatch::{EventKind, Event, Hotwatch};
 
 use termion::event::Key;
 use termion::input::TermRead;
@@ -43,30 +46,59 @@ fn main() {
     // 获取终端宽高
     let mut term = Term::stdout();
     let (term_h, term_w) = term.size();
-    let mut height = term_h as usize;
+    let height = term_h as usize;
     let width = term_w as usize;
 
     let path = Path::new("/home/uos/.cache/deepin/deepin-movie/deepin-movie.log");
-    // let path = Path::new(myfile);
-
-    // 获取文件大小
-    // let len = fs::metadata(&path).unwrap().len();
-    // println!("len: {}", len);
 
     let mut stdout = stdout().into_raw_mode().unwrap();
     let text = fs::read_to_string(&path).unwrap();
     let mut lines: Vec<&str> = text.split("\n").collect();
     let mut number = 0;
+    let size = lines.len();
 
     if flashback {
         lines.reverse();
     }
 
-    find_next(&"error", &mut 0, &mut lines);
+    let (tx, rx) = channel();
+    let mut watcher: RecommendedWatcher = watcher(tx, Duration::from_secs(1)).unwrap();
+    watcher.watch(path, RecursiveMode::Recursive).unwrap();
 
-    // thread::spawn(|| {
-    //     get_file_update(path);
-    // });
+    // 创建一个线程来执行文件监听的循环
+    let handle = thread::spawn(move || {
+        // println!("{}", size);
+        let mut stdout_thread = std::io::stdout().into_raw_mode().unwrap();
+        loop {
+            match rx.recv() {
+                Ok(event) => {
+                    match event {
+                        notify::DebouncedEvent::Write(path) => {
+                            // 文件发生写入事件
+                            let current_text = fs::read_to_string(&path).unwrap();
+                            let current_lines: Vec<&str> = current_text.split("\n").collect();
+                            if (current_lines.len() > size) {
+                                let mut line_number = size;
+                                while line_number < current_lines.len() {
+                                    let line = current_lines[line_number];
+                                    let out_type = from_str_get_color(&line);
+                                    let pos = line_number - size + 1;
+                                    match out_type {
+                                        OutType::Error => writeln!(stdout_thread, "{}{}{}", color::Fg(color::Red), current_lines[line_number], termion::cursor::Goto(0, pos as u16)).unwrap(),
+                                        OutType::Fail => writeln!(stdout_thread, "{}{}{}", color::Fg(color::Yellow), current_lines[line_number], termion::cursor::Goto(0, pos as u16)).unwrap(),
+                                        _ => writeln!(stdout_thread, "{}{}{}", color::Fg(color::White), current_lines[line_number], termion::cursor::Goto(0, pos as u16)).unwrap(),
+                                    }
+                                    line_number += 1;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(e) => println!("文件系统事件接收错误: {:?}", e),
+            }
+        }
+    });
 
     for line in &lines {
         if number == height {
@@ -166,24 +198,6 @@ fn from_str_get_color(s: &&str) -> OutType{
     return my_type;
 }
 
-fn get_file_update(path: &Path) {
-
-    let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
-    let mut len = fs::metadata(path).unwrap().len();
-    hotwatch
-        .watch(path, |event: Event| {
-            if let EventKind::Modify(_) = event.kind {
-                // len = fs::metadata(path).unwrap().len();
-                println!("War has changed{:?}.", event.kind);
-            }
-        })
-        .expect("failed to watch file!");
- 
-    loop {
-        thread::sleep(Duration::from_secs(2));
-    }
-}
-
 fn find_next(s: &&str, current_index: &mut usize, lines: &mut Vec<&str>) -> usize{
     let mut index:i32 = -1;
     for (i, _line) in lines.iter().enumerate().filter(|x| (x.0 > *current_index)) {
@@ -194,9 +208,9 @@ fn find_next(s: &&str, current_index: &mut usize, lines: &mut Vec<&str>) -> usiz
         }
     }
     if index > 0 {
-        let mut term = Term::stdout();
+        let term: Term = Term::stdout();
         let (term_h, term_w) = term.size();
-        let mut height = term_h as usize;
+        let height = term_h as usize;
 
         index = index - height as i32 / 2;
         if index < 0 {
